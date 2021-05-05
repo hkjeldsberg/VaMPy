@@ -65,15 +65,14 @@ def run_pre_processing(filename_model, verbose_print, smoothing_method, smoothin
     print("--- Load model file\n")
     surface = ReadPolyData(filename_model)
 
-    if not is_surface_capped and smoothing_method != "voronoi":
+    if not is_surface_capped(surface) and smoothing_method != "voronoi":
         print("--- Clipping the models inlet and outlets.\n")
         if not path.isfile(file_name_clipped_model):
             # TODO: Check if this is a valid call to this method
-            centerline = compute_centerlines([], [], None, surface, method="pickpoint")
-            surface = uncapp_surface(surface, centerline, filename=None)
+            surface = uncapp_surface(surface, area_limit=20, circleness_limit=5)
+            WritePolyData(surface, file_name_clipped_model)
         else:
             surface = ReadPolyData(file_name_clipped_model)
-
     parameters = get_parameters(path.join(dir_path, case_name))
 
     if "check_surface" not in parameters.keys():

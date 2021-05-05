@@ -1,7 +1,8 @@
 import json
 
-import vtk
 from vmtk import vtkvmtk, vmtkscripts
+
+from vtk_wrapper import *
 
 try:
     from vmtkpointselector import *
@@ -277,48 +278,108 @@ def WriteTecplotSurfaceFile(surface, filename):
         f.write(line)
 
 
-def uncapp_surface(surface, centerlines, filename, clipspheres=0):
+def uncapp_surface(surface, gradients_limit=0.15, area_limit=0.3, circleness_limit=3):
     """
-    A method for removing endcapps on a surface. The method considers the centerline
-    of the surface model and clips the endcaps a distance of clipspheres * MISR away from the edge.
+    A rule-based method for removing endcapps on a surface. The method considers the
+    gradient of the normals, the size of the region, and how similar it is to a circle.
 
     Args:
         surface (vtkPolyData): Surface to be uncapped.
-        centerlines (vtkPolyData): Centerlines in surface model
-        filename (str): Filename to write uncapped model to
-        clipspheres (int): Number of MISR to clip model
+        gradients_limit (float): Upper limit for gradients of normals.
+        area_limit (float): Lower limit of the area.
+        circleness_limit (float): Upper limit of the circleness.
 
     Returns:
         surface (vtkPolyData): The uncapped surface.
     """
-    extractor = vmtkscripts.vmtkEndpointExtractor()
-    extractor.Centerlines = centerlines
-    extractor.RadiusArrayName = radiusArrayName
-    extractor.GroupIdsArrayName = groupIDsArrayName
-    extractor.BlankingArrayName = branchClippingArrayName
-    extractor.NumberOfEndPointSpheres = clipspheres
-    extractor.Execute()
-    clipped_centerlines = extractor.Centerlines
 
-    clipper = vmtkscripts.vmtkBranchClipper()
-    clipper.Surface = surface
-    clipper.Centerlines = clipped_centerlines
-    clipper.RadiusArrayName = radiusArrayName
-    clipper.GroupIdsArrayName = groupIDsArrayName
-    clipper.BlankingArrayName = branchClippingArrayName
-    clipper.Execute()
-    surface = clipper.Surface
+    cell_normals = vtk_compute_polydata_normals(surface, compute_cell_normals=True)
 
-    connector = vmtkscripts.vmtkSurfaceConnectivity()
-    connector.Surface = surface
-    connector.CleanOutput = 1
-    connector.Execute()
-    surface = connector.Surface
+    gradients = vtk_compute_normal_gradients(cell_normals)
 
-    if filename is not None:
-        WritePolyData(surface, filename)
+    # Compute the magnitude of the gradient
+    gradients_array = get_cell_data_array("Gradients", gradients, 9)
+    gradients_magnitude = np.sqrt(np.sum(gradients_array ** 2, axis=1))
 
-    return surface
+    # Mark all cells with a gradient magnitude less then gradient_limit
+    end_capp_array = gradients_magnitude < gradients_limit
+    end_capp_vtk = get_vtk_array("Gradients_mag", 1, end_capp_array.shape[0])
+    for i, p in enumerate(end_capp_array):
+        end_capp_vtk.SetTuple(i, [p])
+    gradients.GetCellData().AddArray(end_capp_vtk)
+
+    # Extract capps
+    end_capps = vtk_compute_threshold(gradients, "Gradients_mag", lower=0.5, upper=1.5,
+                                      threshold_type="between", source=1)
+
+    # Get connectivity
+    end_capps_connectivity = vtk_compute_connectivity(end_capps)
+    region_array = get_point_data_array("RegionId", end_capps_connectivity)
+
+    # Compute area for each region
+    area = []
+    circleness = []
+    regions = []
+    centers_edge = []
+    limit = 0.1
+    for i in range(int(region_array.max()) + 1):
+        regions.append(vtk_compute_threshold(end_capps_connectivity, "RegionId", lower=(i - limit),
+                                             upper=(i + limit), threshold_type="between", source=0))
+        circ, center = compute_circleness(regions[-1])
+        circleness.append(circ)
+        centers_edge.append(center)
+        area.append(vtk_compute_mass_properties(regions[-1]))
+
+    # Only keep outlets with circleness < circleness_limit and area > area_limit
+    circleness_ids = np.where(np.array(circleness) < circleness_limit)
+    region_ids = np.where(np.array(area) > area_limit)
+    regions = [regions[i] for i in region_ids[0] if i in circleness_ids[0]]
+    centers_edge = [centers_edge[i] for i in region_ids[0] if i in circleness_ids[0]]
+
+    # Mark the outlets on the original surface
+    mark_outlets = create_vtk_array(np.zeros(surface.GetNumberOfCells()), "outlets", k=1)
+    locator = get_vtk_cell_locator(surface)
+    tmp_center = [0, 0, 0]
+    for region in regions:
+        centers_filter = vtk.vtkCellCenters()
+        centers_filter.SetInputData(region)
+        centers_filter.VertexCellsOn()
+        centers_filter.Update()
+        centers = centers_filter.GetOutput()
+
+        for i in range(centers.GetNumberOfPoints()):
+            centers.GetPoint(i, tmp_center)
+            p = [0, 0, 0]
+            cell_id = vtk.mutable(0)
+            sub_id = vtk.mutable(0)
+            dist = vtk.mutable(0)
+            locator.FindClosestPoint(tmp_center, p, cell_id, sub_id, dist)
+            mark_outlets.SetTuple(cell_id, [1])
+
+    surface.GetCellData().AddArray(mark_outlets)
+
+    # Remove the outlets from the original surface
+    uncapped_surface = vtk_compute_threshold(surface, "outlets", lower=0, upper=0.5, threshold_type="between", source=1)
+
+    # Check if some cells where not marked
+    remove = True
+    while remove:
+        locator = get_vtk_cell_locator(uncapped_surface)
+        mark_outlets = create_vtk_array(np.zeros(uncapped_surface.GetNumberOfCells()), "outlets", k=1)
+        remove = False
+        for center in centers_edge:
+            locator.FindClosestPoint(center, p, cell_id, sub_id, dist)
+            if dist < 0.01:
+                remove = True
+                mark_outlets.SetTuple(cell_id, [1])
+
+        uncapped_surface.GetCellData().AddArray(mark_outlets)
+
+        if remove:
+            uncapped_surface = vtk_compute_threshold(uncapped_surface, "outlets", lower=0,
+                                                     upper=0.5, threshold_type="between", source=1)
+
+    return uncapped_surface
 
 
 def get_teams(dirpath):
@@ -1415,12 +1476,12 @@ def compute_centerlines(inlet, outlet, filepath, surface, resampling=1, smooth=F
         centerline (vtkPolyData): centerline of the surface.
     """
 
-    if path.isfile(filepath):
+    if filepath is not None and path.isfile(filepath):
         return ReadPolyData(filepath)
 
     centerlines = vmtkscripts.vmtkCenterlines()
     centerlines.Surface = surface
-    centerlines.SeedSelectorName = 'pointlist'
+    centerlines.SeedSelectorName = method
     centerlines.AppendEndPoints = end_point
     centerlines.Resampling = 1
     centerlines.ResamplingStepLength = resampling
