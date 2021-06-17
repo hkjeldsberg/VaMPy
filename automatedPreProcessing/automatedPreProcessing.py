@@ -68,7 +68,7 @@ def run_pre_processing(filename_model, verbose_print, smoothing_method, smoothin
     if not is_surface_capped(surface) and smoothing_method != "voronoi":
         print("--- Clipping the models inlet and outlets.\n")
         if not path.isfile(file_name_clipped_model):
-            # TODO: Check if this is a valid call to this method
+            # TODO: Add input parameters as input to automatedPreProcessing
             surface = uncapp_surface(surface, area_limit=20, circleness_limit=5)
             WritePolyData(surface, file_name_clipped_model)
         else:
