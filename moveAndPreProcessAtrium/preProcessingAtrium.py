@@ -159,7 +159,8 @@ def add_flow_extensions(surface, model_path, moved_path, resolution=1.9, recompu
 
     # Create surface extensions on the original surface
     print("-- Adding flow extensions --")
-    remeshed_extended = add_first_flow_extension(remeshed, centerline)
+    remeshed_extended = add_flow_extension(remeshed, centerline, include_outlet=False)
+    remeshed_extended = add_flow_extension(remeshed_extended, centerline, include_outlet=True, extension_length=1)
     write_polydata(remeshed_extended, remeshed_extended_path)
 
     # Get a point mapper
@@ -361,27 +362,27 @@ def vmtkSmoother(surface, method, iterations=600):
     return surface
 
 
-def add_first_flow_extension(surface, centerlines):
+def add_flow_extension(surface, centerlines, include_outlet, extension_length=2):
     # Mimick behaviour of vmtkflowextensionfilter
     boundaryExtractor = vtkvmtk.vtkvmtkPolyDataBoundaryExtractor()
     boundaryExtractor.SetInputData(surface)
     boundaryExtractor.Update()
     boundaries = boundaryExtractor.GetOutput()
 
-    # Find inlet
+    # Find outlet
     lengths = []
     for i in range(boundaries.GetNumberOfCells()):
         lengths.append(get_curvilinear_coordinate(boundaries.GetCell(i))[-1])
-    inlet_id = lengths.index(max(lengths))
+    outlet_id = lengths.index(max(lengths))
 
-    # Exclude inlet
+    # Exclude outlet or inlets
     boundaryIds = vtk.vtkIdList()
     for i in range(centerlines.GetNumberOfLines() + 1):
-        if i != inlet_id:
+        if include_outlet and i == outlet_id:
             boundaryIds.InsertNextId(i)
-
-    # Extrude the openings
-    extension_length = 2
+        else:
+            if i != outlet_id:
+                boundaryIds.InsertNextId(i)
 
     flowExtensionsFilter = vtkvmtk.vtkvmtkPolyDataFlowExtensionsFilter()
     flowExtensionsFilter.SetInputData(surface)
