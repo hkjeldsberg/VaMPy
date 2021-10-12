@@ -36,7 +36,7 @@ def main(case_path, move_surface, add_extensions, edge_length, patient_specific,
     if move_surface:
         print("-- Moving surface --")
         if patient_specific:
-            move_atrium_real(case_path, mapped_path, case)
+            move_atrium_real(case_path, mapped_path,moved_path, case)
         else:
             # Use constructed movement
             move_atrium(case_path, origin, moved_path, case)
@@ -59,18 +59,18 @@ def IdealVolume(t):
     return volume
 
 
-def move_atrium_real(case_path, moved_path, case):
+def move_atrium_real(case_path, mapped_path,moved_path, case):
     surface = read_polydata(case_path)
     surface = dsa.WrapDataObject(surface)
-    n_frames = 20
-    file_path = "../ITKAtrium/LA_moved/LA_%02d.vtp"
+    mapped_surfaces = sorted(os.listdir(mapped_path))
+    n_frames = len(mapped_surfaces)
     for frame in range(1, n_frames):
-        displaced_surface = read_polydata(path.join(moved_path, "%s_mapped_%02d.vtp" % (case, frame)))
+        displaced_surface = read_polydata(path.join(mapped_path, "%s_%02d.vtp" % (case, frame)))
         displaced_surface = dsa.WrapDataObject(displaced_surface)
         displacement = displaced_surface.PointData["displacement"]
         displaced_surface.Points += displacement
         surface.Points += displacement
-        write_polydata(surface.VTKObject, file_path % frame)
+        write_polydata(surface.VTKObject, path.join(moved_path, "%s_%02d.vtp" % (case, frame)))
         surface.Points -= displacement
 
 
@@ -159,8 +159,10 @@ def add_flow_extensions(surface, model_path, moved_path, resolution=1.9, recompu
 
     # Create surface extensions on the original surface
     print("-- Adding flow extensions --")
-    remeshed_extended = add_flow_extension(remeshed, centerline, include_outlet=False)
-    remeshed_extended = add_flow_extension(remeshed_extended, centerline, include_outlet=True, extension_length=1)
+    length_in = 0.0
+    length_out = 0.0
+    remeshed_extended = add_flow_extension(remeshed, centerline, include_outlet=False, extension_length=length_in)
+    remeshed_extended = add_flow_extension(remeshed_extended, centerline, include_outlet=True, extension_length=length_out)
     write_polydata(remeshed_extended, remeshed_extended_path)
 
     # Get a point mapper
@@ -362,7 +364,7 @@ def vmtkSmoother(surface, method, iterations=600):
     return surface
 
 
-def add_flow_extension(surface, centerlines, include_outlet, extension_length=2):
+def add_flow_extension(surface, centerlines, include_outlet, extension_length=2.0):
     # Mimick behaviour of vmtkflowextensionfilter
     boundaryExtractor = vtkvmtk.vtkvmtkPolyDataBoundaryExtractor()
     boundaryExtractor.SetInputData(surface)
